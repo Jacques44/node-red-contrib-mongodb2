@@ -43,15 +43,64 @@ module.exports = function(RED) {
   // We don't want to pass the find-operation's cursor directly.
   delete operations.find;
 
+  var cursor_pipeline = function(cursor, operations) {
+    // loop over other keys and call the cursor method
+    for (var i in operations) {
+      var step = operations[i];
+      // only first key is considered
+      var k = Object.keys(step);
+      if (k.length != 1) return new Error("Only 1 hash at a time in a cursor command line");
+      cursor = cursor[k[0]](step[k[0]]);
+    }    
+    return cursor;
+  }
+
   operations['find.toArray'] = function() {
+
     var args = Array.prototype.slice.call(arguments, 0);
     var callback = args.pop();
-    mongodb.Collection.prototype.find.apply(this, args).toArray(callback);
+
+    // Std: { criteria }
+    // Ext: { find: { criteria }, cursor: [ { order: args }, { order: args }, ... ]
+
+    var cursor;
+
+    // array, first element an object with key "find" ?
+    if (args[0] && args[0].find) {
+
+      // okay, extended mode !
+      cursor = mongodb.Collection.prototype.find.apply(this, args[0].find);
+
+      // loop over other keys and call the cursor method
+      if (args[0].cursor) {
+        cursor = cursor_pipeline(cursor, args[0].cursor);
+      }
+    } else {
+      cursor = mongodb.Collection.prototype.find.apply(this, args);
+    }
+
+    return cursor.toArray(callback);
   };
+
   operations['find.forEach'] = function() {
     var args = Array.prototype.slice.call(arguments, 0);
     var callback = args.pop();
-    mongodb.Collection.prototype.find.apply(this, args).forEach(function(doc) {
+
+    var cursor;
+    if (args[0] && args[0].find) {
+
+      // okay, extended mode !
+      cursor = mongodb.Collection.prototype.find.apply(this, args[0].find);
+
+      // loop over other keys and call the cursor method
+      if (args[0].cursor) {
+        cursor = cursor_pipeline(cursor, args[0].cursor);
+      }
+    } else {
+      cursor = mongodb.Collection.prototype.find.apply(this, args);
+    }
+
+    cursor.forEach(function(doc) {
       return callback(forEachIteration, doc);
     }, function(err) {
       return callback(err || forEachEnd);
@@ -173,6 +222,7 @@ module.exports = function(RED) {
   }
 
   RED.nodes.registerType("mongodb2 in", function Mongo2InputNode(n) {
+    var resetStatistics = n.reset;
     RED.nodes.createNode(this, n);
     this.configNode = n.configNode;
     this.collection = n.collection;
@@ -226,6 +276,15 @@ module.exports = function(RED) {
       });
 
       function handleMessage(msg) {
+
+        if (resetStatistics) {
+          profiling = {
+            "requests": 0,
+            "success": 0,
+            "error": 0
+          }          
+        }
+
         var operation = nodeOperation;
         if (!operation && msg.operation) {
           operation = operations[msg.operation];
@@ -262,6 +321,7 @@ module.exports = function(RED) {
           // The operation was defined with arguments, thus it may not
           // assume that the last argument is the callback.
           // We must not pass too many arguments to the operation.
+          console.log(operation.length);
           args = args.slice(0, operation.length - 1);
         }
         profiling.requests += 1;
@@ -377,11 +437,19 @@ module.exports = function(RED) {
       "error": 0
     };
     function profilingStatus() {
-      node.status({
-        "fill": "yellow",
-        "shape": "dot",
-        "text": "" + profiling.requests + ", success: " + profiling.success + ", error: " + profiling.error
-      });
+      if (resetStatistics) {
+        node.status({
+          "fill": profiling.error ? "red" : (profiling.success ? "green" : "yellow"),
+          "shape": "dot",
+          "text": "" + profiling.requests + ", success: " + profiling.success + ", error: " + profiling.error
+        });        
+      } else {
+        node.status({
+          "fill": "yellow",
+          "shape": "dot",
+          "text": "" + profiling.requests + ", success: " + profiling.success + ", error: " + profiling.error
+        });
+      }
     }
 
     var debouncer = null;
