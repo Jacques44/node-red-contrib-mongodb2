@@ -39,6 +39,15 @@
     <label for="node-config-input-parallelism"><i class="icon-tasks"></i> Parallelism Limit</label>
     <input type="number" id="node-config-input-parallelism" />
   </div>
+  <div class="form-row">
+    <label for="node-config-input-warncodes"><i class="icon-tasks"></i> Warning codes</label>
+    <input type="text" id="node-config-input-warncodes" />
+  </div>
+  <div class="form-row">
+    <label for="node-config-input-ignoredcodes"><i class="icon-tasks"></i> Ignored codes</label>
+    <input type="text" id="node-config-input-ignoredcodes" />
+  </div>  
+
 </script>
 
 <script type="text/javascript">
@@ -57,6 +66,12 @@ RED.nodes.registerType("mongodb2", {
     },
     "parallelism": {
       "value": -1
+    },
+    "warncodes": {
+      "value": ""
+    },
+    "ignoredcodes": {
+      "value": ""
     }
   },
   "credentials": {
@@ -147,7 +162,7 @@ RED.nodes.registerType("mongodb2 in", {
     }
   },
   inputs: 1,
-  outputs: 1,
+  outputs: 2,
   icon: "mongodb.png",
   label: function label() {
     var mongoConfigNode = RED.nodes.node(this.configNode);

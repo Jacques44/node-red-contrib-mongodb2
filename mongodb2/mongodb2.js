@@ -164,6 +164,25 @@ module.exports = function(RED) {
         this.error("Failed to parse options: " + err);
       }
     }
+
+    var warncodes = {};
+    if (n.warncodes) try {
+      console.log(JSON.parse("[" + n.warncodes + "]"));
+      JSON.parse("[" + n.warncodes + "]").forEach(function(code) { warncodes[code*1] = 1 });
+    } catch(err) {
+      this.error("Failed to parse warn codes:" + err);
+    }
+    this.warncodes = warncodes;
+
+    var ignoredcodes = {};
+    if (n.ignoredcodes) try {
+      console.log(JSON.parse("[" + n.ignoredcodes + "]"));
+      JSON.parse("[" + n.ignoredcodes + "]").forEach(function(code) { ignoredcodes[code*1] = 1 });
+    } catch(err) {
+      this.error("Failed to parse ignored codes:" + err);
+    }
+    this.ignoredcodes = ignoredcodes;    
+
     this.deploymentId = (1 + Math.random() * 0xffffffff).toString(16).replace('.', '');
   }, {
     "credentials": {
@@ -277,12 +296,9 @@ module.exports = function(RED) {
 
       function handleMessage(msg) {
 
-        if (resetStatistics) {
-          profiling = {
-            "requests": 0,
-            "success": 0,
-            "error": 0
-          }          
+        if (msg.operation == "noop") {
+          controlMessage(msg);
+          return messageHandlingCompleted();
         }
 
         var operation = nodeOperation;
@@ -321,19 +337,32 @@ module.exports = function(RED) {
           // The operation was defined with arguments, thus it may not
           // assume that the last argument is the callback.
           // We must not pass too many arguments to the operation.
-          console.log(operation.length);
           args = args.slice(0, operation.length - 1);
         }
         profiling.requests += 1;
         debounceProfilingStatus();
         try {
           operation.apply(collection || client.db, args.concat(function(err, response) {
+
+            if (err && node.config.ignoredcodes.hasOwnProperty(err.code||"")) 
+
             if (err && (forEachIteration != err) && (forEachEnd != err)) {
-              profiling.error += 1;
               debounceProfilingStatus();
-              node.error(err, msg);
+
+              if (node.config.ignoredcodes.hasOwnProperty(err.code||"")) {
+                node.send({ payload: { result: "ignored", error: err } } );
+                profiling.ignored += 1;
+                // nothing to do
+              } else if (node.config.warncodes.hasOwnProperty(err.code||"")) {
+                node.warn(err);
+                profiling.warn += 1;
+              } else {
+                profiling.error += 1;
+                node.error(err, msg);
+              }
               return messageHandlingCompleted();
             }
+
             if (forEachEnd != err) {
               if (!!response) {
                 // Some operations return a Connection object with the result.
@@ -376,6 +405,8 @@ module.exports = function(RED) {
           debounceProfilingStatus();
           node.error(err, msg);
           return messageHandlingCompleted();
+        } finally {
+          controlMessage(msg);
         }
       }
       function messageHandlingCompleted() {
@@ -431,17 +462,37 @@ module.exports = function(RED) {
       node.error(err);
     });
 
-    var profiling = {
-      "requests": 0,
-      "success": 0,
-      "error": 0
-    };
+    var profiling; 
+
+    function resetProfiling() {
+      profiling = {
+       "requests": 0,
+        "success": 0,
+        "error": 0,
+        "warn": 0,
+        "ignored": 0,
+        "last": 0,
+        "start": new Date()
+      }        
+    }
+    resetProfiling();
+
+    function controlMessage(msg) {
+       if (msg && msg.control) {
+        var ctrl = { control: msg.control, requests: profiling.requests, success: profiling.success, errors: profiling.error, ignored: profiling.ignored, warnings: profiling.warn,
+          start: profiling.start, end: new Date() };
+        node.send([ null, ctrl ]);
+        if (resetStatistics) resetProfiling();
+      }     
+    }
+
     function profilingStatus() {
+      if (Date.now() - profiling.last < 1000) return;
       if (resetStatistics) {
         node.status({
-          "fill": profiling.error ? "red" : (profiling.success ? "green" : "yellow"),
+          "fill": profiling.error ? "red" : (profiling.warn ? "yellow" : "green"),
           "shape": "dot",
-          "text": "" + profiling.requests + ", success: " + profiling.success + ", error: " + profiling.error
+          "text": "reqs: " + profiling.requests + ", ok: " + profiling.success + ", err: " + profiling.error+", warn: "+profiling.warn+", ignored: "+profiling.ignored
         });        
       } else {
         node.status({
@@ -450,6 +501,7 @@ module.exports = function(RED) {
           "text": "" + profiling.requests + ", success: " + profiling.success + ", error: " + profiling.error
         });
       }
+      profiling.last = Date.now();
     }
 
     var debouncer = null;
